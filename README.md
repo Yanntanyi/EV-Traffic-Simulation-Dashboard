@@ -36,7 +36,7 @@ This dashboard helps users explore electric vehicle (EV) travel patterns across 
 
 ### 5. How to Use the Dashboard
 - Select EV types, travel ranges, or specific counties.
-- Click "Run Simulation" to see updated results instantly.
+- Click "Run Simulation" to see updated results instantly (give it a couple seconds to run).
 - Easily test different scenarios to understand where more chargers might help most.
 
 ---
