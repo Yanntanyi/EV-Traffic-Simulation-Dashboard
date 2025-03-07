@@ -1,3 +1,5 @@
+# ev_dashboard.py
+
 import dash
 from dash import dcc, html, dash_table, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -13,9 +15,10 @@ from scipy.spatial import ConvexHull
 import json
 import os
 
-# I made a Helper function to convert a hex color to an rgba string
+# Helper function: converts hex color codes to an rgba string.
+# I wrote this so that our cluster polygons can have a transparent fill that matches their border.
 def hex_to_rgba(hex_color, alpha):
-    """Convert a hex color (format: '#RRGGBB') to an rgba string with the given alpha."""
+    """Convert a hex color (e.g., '#RRGGBB') to an rgba string with a given alpha value."""
     hex_color = hex_color.lstrip('#')
     r = int(hex_color[0:2], 16)
     g = int(hex_color[2:4], 16)
@@ -25,11 +28,12 @@ def hex_to_rgba(hex_color, alpha):
 ##############################
 # Data Loading and Processing
 ##############################
-csv_filename = "Electric_Vehicle_Population_Data 2.csv"
+# I store my CSV data in the "data" folder and the geojson file in the "geo" folder.
+csv_filename = os.path.join("data", "Electric_Vehicle_Population_Data 2.csv")
 if os.path.exists(csv_filename):
     ev_pop = pd.read_csv(csv_filename)
 else:
-    # Dummy data if CSV file is missing (this is just precautionary)
+    # This dummy data is a fallback so that the dashboard still works during development.
     data = {
         "Vehicle Location": [
             "POINT(-122.34301 47.659185)",
@@ -37,6 +41,7 @@ else:
             "POINT(-120.6027202 46.5965625)"
         ],
         "Make": ["TESLA", "JEEP", "JEEP"],
+        "Model": ["MODEL 3", "GRAND CHEROKEE", "GRAND CHEROKEE"],
         "Electric Vehicle Type": [
             "Battery Electric Vehicle (BEV)",
             "Plug-in Hybrid Electric Vehicle (PHEV)",
@@ -48,28 +53,30 @@ else:
     }
     ev_pop = pd.DataFrame(data)
 
-# Cleaning and processing the data
+# Cleaning the data: remove records with missing locations, and convert our WKT strings into geometry.
 ev_pop = ev_pop.dropna(subset=["Vehicle Location"])
 ev_pop["Vehicle Location"] = ev_pop["Vehicle Location"].astype(str)
 ev_pop["geometry"] = ev_pop["Vehicle Location"].apply(
     lambda x: wkt.loads(x) if x.startswith("POINT") else None)
 ev_pop = ev_pop.dropna(subset=["geometry"])
 
-# Creating the GeoDataFrame
+# Creating a GeoDataFrame for spatial processing.
 ev_pop_gdf = gpd.GeoDataFrame(ev_pop, geometry="geometry", crs="EPSG:4326")
+# Extracting latitude and longitude for plotting.
 ev_pop_gdf["Latitude"] = ev_pop_gdf.geometry.y
 ev_pop_gdf["Longitude"] = ev_pop_gdf.geometry.x
 
-# Travel range simulation function (updated)
+# This function simulates how far an EV can travel.
+# It uses the geodesic distance (which accounts for Earth’s curvature) to compute a destination point.
 def simulate_ev_range(lat, lon, ev_range_miles):
-    """Calculate max travel coordinates using geodesic with distance in meters."""
+    """Simulate the maximum travel coordinates for an EV given its range (in miles)."""
     if ev_range_miles <= 0:
         return lat, lon
-    distance_meters = ev_range_miles * 1609.34
+    distance_meters = ev_range_miles * 1609.34  # Convert miles to meters
     destination = geodesic(meters=distance_meters).destination((lat, lon), 90)
     return destination.latitude, destination.longitude
 
-# Applying the simulation
+# Applying the travel simulation to each EV record.
 ev_pop_gdf["Max_Travel_Lat"], ev_pop_gdf["Max_Travel_Lon"] = zip(
     *ev_pop_gdf.apply(
         lambda row: simulate_ev_range(row["Latitude"], row["Longitude"], row["Electric Range"]),
@@ -77,7 +84,7 @@ ev_pop_gdf["Max_Travel_Lat"], ev_pop_gdf["Max_Travel_Lon"] = zip(
     )
 )
 
-# Creating the travel GeoDataFrame using the simulated max travel points
+# Creating a second GeoDataFrame that uses these simulated travel points.
 ev_travel_gdf = gpd.GeoDataFrame(
     ev_pop_gdf,
     geometry=gpd.points_from_xy(ev_pop_gdf["Max_Travel_Lon"], ev_pop_gdf["Max_Travel_Lat"]),
@@ -87,6 +94,7 @@ ev_travel_gdf = gpd.GeoDataFrame(
 ##############################
 # Dashboard Setup
 ##############################
+# I want to limit the County Filter to Washington State counties.
 washington_counties_list = [
     "Adams", "Asotin", "Benton", "Chelan", "Clallam", "Clark", "Columbia", "Cowlitz",
     "Douglas", "Ferry", "Franklin", "Garfield", "Grant", "Grays Harbor", "Island", "Jefferson",
@@ -94,14 +102,15 @@ washington_counties_list = [
     "Pend Oreille", "Pierce", "San Juan", "Skagit", "Skamania", "Snohomish", "Spokane", "Stevens",
     "Thurston", "Wahkiakum", "Walla Walla", "Whatcom", "Whitman", "Yakima"
 ]
-# Restricting county options to those present in the data and in Washington
+# Only include counties that are present in our data and are in Washington.
 county_options = sorted(list(set(ev_travel_gdf["County"]).intersection(set(washington_counties_list))))
 
-# Initializing Dash app
+# Initialize the Dash app with Bootstrap styling.
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.LUMEN])
 server = app.server
 
-# Dashboard Layout
+# Layout of the dashboard:
+# The sidebar contains filter controls, and the main area displays the visualizations.
 sidebar = dbc.Col([
     html.H4("Simulation Controls", className="mb-4"),
     html.Hr(),
@@ -141,6 +150,7 @@ sidebar = dbc.Col([
     dbc.Button("Run Simulation", id='run-button', color="primary", className="mt-4 w-100")
 ], md=3, style={'background-color': '#f8f9fa', 'padding': '20px'})
 
+# The main content area holds the map, charts, dead zone table, and risk summary.
 main_content = dbc.Col([
     html.H2("EV Traffic Simulation Dashboard", className="text-center mb-4"),
     dcc.Graph(id='cluster-map', style={'height': '75vh'}),
@@ -166,11 +176,15 @@ main_content = dbc.Col([
              style={'border': '1px solid #dee2e6', 'border-radius': '5px'})
 ], md=9)
 
+# Assembling the layout into a container.
 app.layout = dbc.Container([
     dbc.Row([sidebar, main_content])
 ], fluid=True)
 
-# Callback to update the dashboard
+################################
+# Callback: Update Dashboard
+################################
+# This callback filters the data, clusters the EVs, and updates all visualizations.
 @app.callback(
     [Output('cluster-map', 'figure'),
      Output('cluster-bar', 'figure'),
@@ -184,6 +198,17 @@ app.layout = dbc.Container([
      State('county-selector', 'value')]
 )
 def update_dashboard(n_clicks, models, ev_types, max_range, counties):
+    # Setting default values to ensure the simulation runs on page load.
+    if n_clicks is None:
+        n_clicks = 0
+    if models is None:
+        models = []
+    if ev_types is None:
+        ev_types = []
+    if counties is None:
+        counties = []
+    
+    # Filtering the EV data based on user selections.
     filtered = ev_travel_gdf.copy()
     if models:
         filtered = filtered[filtered["Make"].isin(models)]
@@ -193,22 +218,26 @@ def update_dashboard(n_clicks, models, ev_types, max_range, counties):
         filtered = filtered[filtered["County"].isin(counties)]
     filtered = filtered[filtered["Electric Range"] <= max_range]
     
-    # Performing clustering on simulated max travel points
+    # Clustering the simulated travel points using DBSCAN.
+    # I increased eps to 0.005 so that nearby points form larger clusters, making the map less cluttered.
     coords = np.radians(filtered[["Max_Travel_Lat", "Max_Travel_Lon"]])
     if len(coords) > 0:
-        db = DBSCAN(eps=0.001, min_samples=10, metric='haversine').fit(coords)
+        db = DBSCAN(eps=0.005, min_samples=10, metric='haversine').fit(coords)
         filtered["Cluster"] = db.labels_
     else:
         filtered["Cluster"] = -1
     
+    # Separating data into clusters (non-dead) and dead zones.
     dead = filtered[filtered["Cluster"] == -1]
     non_dead = filtered[filtered["Cluster"] != -1]
     
+    # Building the base map figure.
     fig_map = go.Figure()
     
-    # adding county boundaries if it is available
+    # Adding county boundaries from the geo folder (if available).
     try:
-        with open('wa_counties.geojson') as f:
+        geo_path = os.path.join("geo", "wa_counties.geojson")
+        with open(geo_path) as f:
             counties_geo = json.load(f)
         fig_map.update_layout(mapbox_layers=[{
             'source': counties_geo,
@@ -219,12 +248,12 @@ def update_dashboard(n_clicks, models, ev_types, max_range, counties):
     except Exception as e:
         print("County boundaries load error:", e)
     
-    # Creating a discrete color mapping for clusters
+    # Creating a discrete color mapping for each cluster.
     unique_clusters = sorted(non_dead["Cluster"].unique())
     palette = px.colors.qualitative.Plotly
     cluster_color_mapping = {cluster: palette[i % len(palette)] for i, cluster in enumerate(unique_clusters)}
     
-    # For each cluster, I had to compute convex hull and add a shaded polygon
+    # For each cluster, I computed a convex hull and add it as a shaded polygon.
     for cluster in unique_clusters:
         cluster_data = non_dead[non_dead["Cluster"] == cluster]
         if len(cluster_data) >= 3:
@@ -237,7 +266,6 @@ def update_dashboard(n_clicks, models, ev_types, max_range, counties):
             hull_points = points[hull.vertices]
             hull_lat = list(hull_points[:, 0]) + [hull_points[0, 0]]
             hull_lon = list(hull_points[:, 1]) + [hull_points[0, 1]]
-
             count = len(cluster_data)
             top_model = cluster_data["Make"].mode().iloc[0] if not cluster_data["Make"].mode().empty else "N/A"
             avg_range = cluster_data["Electric Range"].mean()
@@ -256,7 +284,7 @@ def update_dashboard(n_clicks, models, ev_types, max_range, counties):
                 hovertext=hover_text
             ))
     
-    # Adding non-dead EV locations (scatter)
+    # Adding non-dead EV locations as individual scatter points.
     if not non_dead.empty:
         fig_map.add_trace(go.Scattermapbox(
             lat=non_dead["Latitude"],
@@ -272,23 +300,20 @@ def update_dashboard(n_clicks, models, ev_types, max_range, counties):
             name="EV Locations"
         ))
     
-    # Adding dead zones with a bright red "X"
+    # Highlighting dead zones with a bright red "X" and a warning tooltip.
     if not dead.empty:
         fig_map.add_trace(go.Scattermapbox(
             lat=dead["Latitude"],
             lon=dead["Longitude"],
             mode="markers+text",
-            marker=dict(
-                size=12,
-                color="red",
-                symbol="x"
-            ),
+            marker=dict(size=12, color="red", symbol="x"),
             text="⚠️",
             textposition="middle center",
             hovertext="No charging station nearby – EV may be stranded here!",
             name="Dead Zones"
         ))
     
+    # Final map layout adjustments.
     fig_map.update_layout(
         mapbox_style="carto-positron",
         mapbox=dict(center=dict(lat=47.5, lon=-120.5), zoom=6),
@@ -297,7 +322,7 @@ def update_dashboard(n_clicks, models, ev_types, max_range, counties):
         title="EV Locations, Cluster Boundaries, and Dead Zones"
     )
     
-    # Cluster bar chart (bottom of dashboard)
+    # bar chart showing the count of EVs per cluster.
     cluster_bar = px.bar(
         filtered.groupby("Cluster").size().reset_index(name="Count"),
         x="Cluster",
@@ -305,25 +330,26 @@ def update_dashboard(n_clicks, models, ev_types, max_range, counties):
         title="EV Clusters by Travel Region"
     )
     
-    # Vehicle type pie chart (bottom of dashboard)
+    # pie chart to compare the distribution of EV types.
     type_pie = px.pie(
         filtered,
         names="Electric Vehicle Type",
         title="BEV vs PHEV Distribution"
     )
     
-    # Dead zone table (bottom of dashboard)
+    # table listing EVs in dead zones.
     deadzone_table = dead[["Make", "City", "Electric Range", "County"]].to_dict("records")
     
-    # Risk summary (dead zone counter and additional info)
+    # risk summary showing the number of EVs in dead zones.
     dead_zone_count = len(dead)
     risk_summary = html.Div([
         html.H4("Risk Summary", style={"color": "red"}),
         html.Hr(),
-        html.P(f"🚨 EVs in Danger Zones: {dead_zone_count}"),
+        html.P(f"🚨 EVs in Danger Zones: {dead_zone_count}")
     ])
     
     return fig_map, cluster_bar, type_pie, deadzone_table, risk_summary
 
 if __name__ == '__main__':
+    # Run the dashboard on port 8055.
     app.run_server(debug=True, port=8055)
